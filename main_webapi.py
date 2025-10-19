@@ -274,9 +274,10 @@ def upload_file_via_api(auth_credentials, project_id, asset_id, version_id, data
     file_name = os.path.basename(file_path)
     file_size = os.path.getsize(file_path)
 
+    # リクエストボディ (OpenAPI仕様書に準拠)
     body = {
-        "FilePath": file_name,
-        "Length": file_size
+        "filePath": file_name  # filePath (required)
+        # description, tags, portalMetadata, metadata はオプショナル
     }
 
     try:
@@ -289,7 +290,8 @@ def upload_file_via_api(auth_credentials, project_id, asset_id, version_id, data
         print(f"    ✓ 署名付きURL取得成功")
 
         # ステップ2: 署名付きURLにファイルをアップロード
-        upload_url = upload_info.get("uploadUrl") or upload_info.get("url")
+        # OpenAPI仕様書に準拠: レスポンスフィールドは "uploadUrl"
+        upload_url = upload_info.get("uploadUrl")
 
         if not upload_url:
             print(f"    警告: アップロードURLが見つかりません。レスポンス: {upload_info}")
@@ -363,17 +365,18 @@ def start_transformation_via_api(auth_credentials, project_id, asset_id, version
     """
     print(f"  変換処理を開始中... (ワークフロー: {workflow_type})")
 
-    # このエンドポイントはAPIパターンから推測
-    url = f"{UNITY_API_BASE}/assets/v1/projects/{project_id}/assets/{asset_id}/versions/{version_id}/datasets/{dataset_id}/transformations"
+    # OpenAPI仕様書に準拠: workflowTypeはURLパラメータ
+    url = f"{UNITY_API_BASE}/assets/v1/projects/{project_id}/assets/{asset_id}/versions/{version_id}/datasets/{dataset_id}/transformations/start/{workflow_type}"
 
     headers = {
         "Authorization": f"Basic {auth_credentials}",
         "Content-Type": "application/json"
     }
 
+    # OpenAPI仕様書に準拠: リクエストボディ
     body = {
-        "workflowType": workflow_type,
-        "parameters": parameters
+        "extraParameters": parameters  # extraParameters (optional)
+        # workflowScope, inputFiles もオプショナル
     }
 
     try:
@@ -383,7 +386,9 @@ def start_transformation_via_api(auth_credentials, project_id, asset_id, version
         transformation_data = response.json()
 
         print(f"  ✓ 変換処理開始成功")
-        print(f"    Transformation ID: {transformation_data.get('id')}")
+        # OpenAPI仕様書に準拠: レスポンスフィールドは "transformationId"
+        transformation_id = transformation_data.get('transformationId')
+        print(f"    Transformation ID: {transformation_id}")
 
         return transformation_data
 
@@ -437,7 +442,7 @@ def get_transformation_status_via_api(auth_credentials, project_id, asset_id, ve
         raise
 
 
-def get_asset_details_via_api(auth_credentials, project_id, asset_id):
+def get_asset_details_via_api(auth_credentials, project_id, asset_id, version_id):
     """
     Web APIでアセットの詳細情報を取得する
 
@@ -449,20 +454,28 @@ def get_asset_details_via_api(auth_credentials, project_id, asset_id):
         プロジェクトID
     asset_id : str
         アセットID
+    version_id : str
+        バージョンID
 
     Returns
     -------
     dict
         アセットの詳細情報
     """
-    url = f"{UNITY_API_BASE}/assets/v1/projects/{project_id}/assets/{asset_id}"
+    # OpenAPI仕様書に準拠: エンドポイントにはversionIdが必要
+    url = f"{UNITY_API_BASE}/assets/v1/projects/{project_id}/assets/{asset_id}/versions/{version_id}"
 
     headers = {
         "Authorization": f"Basic {auth_credentials}"
     }
 
+    # データセット情報を含めるためにIncludeFieldsパラメータを追加
+    params = {
+        "IncludeFields": ["datasets.*", "datasets.files.*", "datasets.files.downloadURL"]
+    }
+
     try:
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, params=params)
         response.raise_for_status()
 
         return response.json()
@@ -503,58 +516,87 @@ def download_file_via_api(auth_credentials, project_id, asset_id, version_id, da
     print(f"  ファイル '{file_name}' をダウンロード中...")
 
     try:
-        # ステップ1: アセット詳細を取得してデータセットIDを見つける
+        # ステップ1: アセット詳細を取得（filesフィールドを含む）
         print(f"    アセット詳細を取得中...")
-        asset_details = get_asset_details_via_api(auth_credentials, project_id, asset_id)
 
-        # データセットを検索
-        target_dataset = None
-        if "datasets" in asset_details:
-            for dataset in asset_details["datasets"]:
-                if dataset.get("name") == dataset_name:
-                    target_dataset = dataset
-                    break
+        asset_url = f"{UNITY_API_BASE}/assets/v1/projects/{project_id}/assets/{asset_id}/versions/{version_id}"
+        headers = {"Authorization": f"Basic {auth_credentials}"}
+        params = {
+            "IncludeFields": ["*", "datasets", "datasets.*", "files", "files.*"]
+        }
 
-        if not target_dataset:
-            raise ValueError(f"データセット '{dataset_name}' が見つかりません")
+        asset_response = requests.get(asset_url, headers=headers, params=params)
+        asset_response.raise_for_status()
+        asset_details = asset_response.json()
 
-        dataset_id = target_dataset.get("id")
-        print(f"    ✓ データセット発見 (ID: {dataset_id})")
+        # ステップ2: filesフィールドから対象ファイルを検索
+        files_list = asset_details.get("files", [])
+        print(f"    Asset内の全ファイル数: {len(files_list)}")
 
-        # ステップ2: ファイル情報を取得
-        print(f"    ファイル情報を取得中...")
         target_file = None
-        if "files" in target_dataset:
-            for file_info in target_dataset["files"]:
-                if file_info.get("path") == file_name or file_info.get("name") == file_name:
-                    target_file = file_info
+        dataset_id = None
+
+        for file_info in files_list:
+            file_path_value = file_info.get("filePath")
+            print(f"      - {file_path_value} (status: {file_info.get('status')})")
+
+            # ファイル名が一致するかチェック
+            if file_path_value == file_name or file_path_value.endswith(file_name):
+                # このファイルが属するデータセットIDを取得
+                dataset_ids = file_info.get("datasetIds", [])
+                if dataset_ids:
+                    # データセット名と一致するか確認
+                    datasets = asset_details.get("datasets", [])
+                    for ds in datasets:
+                        if ds.get("datasetId") in dataset_ids and ds.get("name") == dataset_name:
+                            target_file = file_info
+                            dataset_id = ds.get("datasetId")
+                            break
+
+                if target_file:
                     break
 
         if not target_file:
-            raise ValueError(f"ファイル '{file_name}' がデータセット内に見つかりません")
+            # ファイル名が完全一致しない場合、最初のGLB/GLTFファイルを検索
+            print(f"    完全一致するファイルが見つかりません。GLB/GLTFファイルを検索中...")
+            for file_info in files_list:
+                file_path_value = file_info.get("filePath", "")
+                if file_path_value.endswith('.glb') or file_path_value.endswith('.gltf'):
+                    dataset_ids = file_info.get("datasetIds", [])
+                    if dataset_ids:
+                        datasets = asset_details.get("datasets", [])
+                        for ds in datasets:
+                            if ds.get("datasetId") in dataset_ids and ds.get("name") == dataset_name:
+                                print(f"    代わりに '{file_path_value}' を使用します")
+                                target_file = file_info
+                                dataset_id = ds.get("datasetId")
+                                break
 
-        print(f"    ✓ ファイル発見")
+                    if target_file:
+                        break
 
-        # ステップ3: ダウンロードURLを取得
-        # ファイル情報にURLが含まれている場合
-        download_url = target_file.get("downloadUrl") or target_file.get("url")
+        if not target_file or not dataset_id:
+            raise ValueError(f"ファイル '{file_name}' がデータセット '{dataset_name}' 内に見つかりません")
 
-        # URLが含まれていない場合は、別のエンドポイントから取得
-        if not download_url:
-            file_id = target_file.get("id")
-            url_request = f"{UNITY_API_BASE}/assets/v1/projects/{project_id}/assets/{asset_id}/versions/{version_id}/datasets/{dataset_id}/files/{file_id}"
-            headers = {"Authorization": f"Basic {auth_credentials}"}
+        print(f"    ✓ ファイル発見: {target_file.get('filePath')}")
+        print(f"    ✓ データセットID: {dataset_id}")
 
-            response = requests.get(url_request, headers=headers)
-            response.raise_for_status()
+        # ステップ3: ダウンロードURL取得エンドポイントを呼び出し
+        # OpenAPI仕様書に準拠: /files/{filePath}/download-url
+        file_path_encoded = requests.utils.quote(target_file.get("filePath"), safe='')
+        download_url_endpoint = f"{UNITY_API_BASE}/assets/v1/projects/{project_id}/assets/{asset_id}/versions/{version_id}/datasets/{dataset_id}/files/{file_path_encoded}/download-url"
 
-            file_details = response.json()
-            download_url = file_details.get("downloadUrl") or file_details.get("url")
+        print(f"    ダウンロードURLを取得中...")
+        url_response = requests.get(download_url_endpoint, headers=headers)
+        url_response.raise_for_status()
+
+        url_data = url_response.json()
+        download_url = url_data.get("url") or url_data.get("downloadUrl")
 
         if not download_url:
             raise ValueError("ダウンロードURLが取得できませんでした")
 
-        print(f"    ダウンロードURL取得成功")
+        print(f"    ✓ ダウンロードURL取得成功")
 
         # ステップ4: ファイルをダウンロード
         print(f"    ファイルをダウンロード中...")
@@ -567,6 +609,7 @@ def download_file_via_api(auth_credentials, project_id, asset_id, version_id, da
             f.write(response.content)
 
         print(f"  ✓ ファイルダウンロード成功: {output_path}")
+        print(f"    ファイルサイズ: {len(response.content)} bytes")
 
         return output_path
 
@@ -638,20 +681,33 @@ def main():
         if not asset_id or not version_id:
             raise ValueError("アセット作成に失敗: IDまたはバージョンが取得できませんでした")
 
-        # === ステップ3: データセット作成 ===
+        # === ステップ3: データセット取得/作成 ===
         print("\n" + "-"*60)
-        print("ステップ3: データセット作成")
+        print("ステップ3: データセット取得/作成")
         print("-"*60)
 
-        dataset = create_dataset_via_api(
-            auth_credentials=auth_credentials,
-            project_id=PROJECT_ID,
-            asset_id=asset_id,
-            version_id=version_id,
-            dataset_name="source_obj"
-        )
+        # OpenAPI仕様書に準拠: CreateNewAssetResponseにはdatasetsが含まれる
+        dataset_id = None
+        datasets = asset.get("datasets", [])
 
-        dataset_id = dataset.get("datasetId")
+        if datasets:
+            # デフォルトで作成されるSourceデータセットを探す
+            for ds in datasets:
+                if ds.get("name") == "Source" or "Source" in ds.get("systemTags", []):
+                    dataset_id = ds.get("datasetId")
+                    print(f"  ✓ デフォルトのSourceデータセットを使用: {dataset_id}")
+                    break
+
+        # データセットが見つからない場合は作成
+        if not dataset_id:
+            dataset = create_dataset_via_api(
+                auth_credentials=auth_credentials,
+                project_id=PROJECT_ID,
+                asset_id=asset_id,
+                version_id=version_id,
+                dataset_name="source_obj"
+            )
+            dataset_id = dataset.get("datasetId")
 
         if not dataset_id:
             raise ValueError("データセット作成に失敗: IDが取得できませんでした")
@@ -675,15 +731,14 @@ def main():
         print("ステップ5: GLTF変換処理の開始")
         print("-"*60)
 
-        output_filename = f"{os.path.splitext(os.path.basename(INPUT_FILE_PATH))[0]}.gltf"
+        # OpenAPI仕様書に準拠: free-tier-optimize-and-convertはglbをデフォルト出力
+        output_filename = f"{os.path.splitext(os.path.basename(INPUT_FILE_PATH))[0]}.glb"
 
+        # OpenAPI仕様書に準拠: extraParametersの正しい構造
         transformation_params = {
-            "outputs": [
-                {
-                    "outputName": output_filename,
-                    "outputFormat": "gltf"
-                }
-            ]
+            "outputFileName": os.path.splitext(os.path.basename(INPUT_FILE_PATH))[0],
+            "exportFormats": ["glb"]  # Freeティアではglbが標準
+            # strategy, target, mergeOptimization, meshCleaning などもオプショナル
         }
 
         transformation = start_transformation_via_api(
@@ -692,14 +747,37 @@ def main():
             asset_id=asset_id,
             version_id=version_id,
             dataset_id=dataset_id,
-            workflow_type="OptimizeAndConvert",
+            workflow_type="higher-tier-optimize-and-convert",  # OpenAPI仕様書に準拠 (Pro/Enterpriseティア用)
             parameters=transformation_params
         )
 
-        transformation_id = transformation.get("id")
+        # OpenAPI仕様書に準拠: レスポンスフィールドは "transformationId"
+        transformation_id = transformation.get("transformationId")
 
         if not transformation_id:
             raise ValueError("変換処理の開始に失敗: Transformation IDが取得できませんでした")
+
+        # === ステップ5.5: AutoSubmitを有効化（変換完了後に自動的にSubmit） ===
+        print("\n" + "-"*60)
+        print("ステップ5.5: AutoSubmitを有効化")
+        print("-"*60)
+
+        autosubmit_url = f"{UNITY_API_BASE}/assets/v1/projects/{PROJECT_ID}/assets/{asset_id}/versions/{version_id}/autosubmit"
+        autosubmit_headers = {
+            "Authorization": f"Basic {auth_credentials}",
+            "Content-Type": "application/json"
+        }
+        autosubmit_body = {
+            "changeLog": "REST API経由でOBJからGLBに変換"
+        }
+
+        try:
+            autosubmit_response = requests.post(autosubmit_url, headers=autosubmit_headers, json=autosubmit_body)
+            autosubmit_response.raise_for_status()
+            print("  ✓ AutoSubmit有効化成功（変換完了後に自動的にSubmitされます）")
+        except requests.exceptions.RequestException as e:
+            print(f"  警告: AutoSubmit有効化に失敗: {e}")
+            # AutoSubmit失敗は致命的ではないので続行
 
         # === ステップ6: 変換ステータスのポーリング ===
         print("\n" + "-"*60)
@@ -722,10 +800,13 @@ def main():
             status = transformation_status.get("status")
             print(f"  現在のステータス: {status}")
 
-            if status == "SUCCEEDED":
+            # ステータスは大文字小文字を区別しないで比較
+            if status and status.upper() == "SUCCEEDED":
                 print("  ✓ 変換が成功しました！")
+                # デバッグ: 変換レスポンス全体を確認
+                print(f"  変換レスポンス詳細: {json.dumps(transformation_status, indent=2, ensure_ascii=False)}")
                 break
-            elif status == "FAILED":
+            elif status and status.upper() == "FAILED":
                 error_msg = transformation_status.get("error", "不明なエラー")
                 print(f"  ✗ 変換が失敗しました: {error_msg}")
                 sys.exit(1)
@@ -742,13 +823,14 @@ def main():
 
         output_path = os.path.join(OUTPUT_FOLDER, output_filename)
 
+        # データセット名を "Optimize and convert" に変更
         download_file_via_api(
             auth_credentials=auth_credentials,
             project_id=PROJECT_ID,
             asset_id=asset_id,
             version_id=version_id,
             dataset_name="Optimize and convert",
-            file_name=output_filename,
+            file_name=output_filename,  # これで.glbファイルを検索
             output_path=output_path
         )
 

@@ -30,7 +30,18 @@ Unity Cloud Asset Manager APIを使用して、3Dモデルファイル（OBJ形�
 ### 1. 依存パッケージのインストール
 
 ```bash
-pip install -r requirements.txt
+# 既存の仮想環境がある場合は削除
+deactivate  # 仮想環境が有効な場合のみ
+rm -rf .venv
+
+# uv で仮想環境を作成
+uv venv
+
+# 仮想環境を有効化
+source .venv/bin/activate
+
+# 依存パッケージをインストール
+uv pip install -r requirements.txt --extra-index-url https://unity3ddist.jfrog.io/artifactory/api/pypi/am-pypi-prod-local/simple
 ```
 
 ### 2. 環境変数の設定
@@ -107,13 +118,13 @@ assets_input/your_model.obj
 ### SDK版を使用する場合
 
 ```bash
-python main.py
+.venv/bin/python main.py
 ```
 
 ### 完全REST API版を使用する場合
 
 ```bash
-python main_webapi.py
+.venv/bin/python main_webapi.py
 ```
 
 ### 処理の流れ
@@ -129,14 +140,15 @@ python main_webapi.py
 5. **ファイルのアップロード**
    - 署名付きURLを取得してファイルをアップロード
 6. **GLTF変換処理の開始**
-   - POST `.../datasets/{datasetId}/transformations`
-   - ワークフロータイプ: `OptimizeAndConvert`
+   - POST `.../datasets/{datasetId}/transformations/start/{workflowType}`
+   - ワークフロータイプ: `higher-tier-optimize-and-convert` または `free-tier-optimize-and-convert`
 7. **変換ステータスのポーリング**
    - GET `.../transformations/{transformationId}`
    - 最大5分間、10秒間隔でステータスを確認
 8. **変換済みファイルのダウンロード**
-   - 変換後のデータセット（`Optimize and convert`）から該当ファイルを検索
-   - ダウンロードURLを取得してファイルを保存
+   - Asset詳細API（`GET /assets/{assetId}/versions/{versionId}`）の`files`フィールドから変換済みファイルを検索
+   - ファイルダウンロードURL取得API（`GET .../files/{filePath}/download-url`）でダウンロードURLを取得
+   - ダウンロードURLからファイルをダウンロードして保存
 
 変換されたGLTFファイルは `assets_output/` ディレクトリに保存されます。
 
@@ -168,11 +180,12 @@ python main_webapi.py
 | トークン取得 | POST | `/auth/v1/token-exchange?projectId={projectId}` |
 | アセット作成 | POST | `/assets/v1/projects/{projectId}/assets` |
 | アセット一覧 | GET | `/assets/v1/projects/{projectId}/assets` |
-| アセット詳細 | GET | `/assets/v1/projects/{projectId}/assets/{assetId}` |
+| アセット詳細 | GET | `/assets/v1/projects/{projectId}/assets/{assetId}/versions/{version}` |
 | データセット作成 | POST | `/assets/v1/projects/{projectId}/assets/{assetId}/versions/{version}/datasets` |
-| ファイルアップロード | POST | `/assets/v1/projects/{projectId}/assets/{assetId}/versions/{version}/datasets/{datasetId}/files` |
-| 変換開始 | POST | `/assets/v1/projects/{projectId}/assets/{assetId}/versions/{version}/datasets/{datasetId}/transformations` |
+| ファイルアップロード準備 | POST | `/assets/v1/projects/{projectId}/assets/{assetId}/versions/{version}/datasets/{datasetId}/files` |
+| 変換開始 | POST | `/assets/v1/projects/{projectId}/assets/{assetId}/versions/{version}/datasets/{datasetId}/transformations/start/{workflowType}` |
 | 変換ステータス確認 | GET | `/assets/v1/projects/{projectId}/assets/{assetId}/versions/{version}/datasets/{datasetId}/transformations/{transformationId}` |
+| ファイルダウンロードURL取得 | GET | `/assets/v1/projects/{projectId}/assets/{assetId}/versions/{version}/datasets/{datasetId}/files/{filePath}/download-url` |
 
 ### エラーレスポンス構造
 
@@ -207,6 +220,10 @@ APIが返すエラーレスポンスには以下の情報が含まれます：
 
 - サービスアカウントに適切なロール（`Asset Manager Contributor` または `Asset Manager Admin`）が割り当てられているか確認
 - 対象プロジェクトに対してロールが割り当てられているか確認（組織レベルではなくプロジェクトレベル）
+- エラーメッセージに「Organization does not have the entitlement to access the product」と表示される場合：
+  - 無料プランで`higher-tier-optimize-and-convert`を使用していないか確認
+  - 無料プランの場合は`free-tier-optimize-and-convert`を使用してください
+  - または有料プランにアップグレードしてください
 
 ### 変換エラー
 
@@ -226,35 +243,64 @@ timeout = 600  # 10分に延長
 
 ### ファイルが見つからないエラー
 
+**入力ファイルの場合:**
 - `INPUT_FILE_PATH` が正しく設定されているか確認
 - `assets_input/` ディレクトリが存在するか確認
 - ファイルパスが正しいか確認（相対パス）
+
+**変換後のファイルが見つからない場合:**
+- 変換が正常に完了している（Status: `Succeeded`）か確認
+- Asset詳細APIの`files`フィールドを使用してファイル情報を取得
+- データセットのファイル一覧APIではなく、Asset詳細APIを使用することを推奨
+- `main_webapi.py`では自動的にAsset詳細APIを使用するように実装されています
 
 ## 技術詳細
 
 ### 変換パラメータ
 
+OpenAPI仕様書に準拠した変換パラメータ：
+
 ```python
 transformation_params = {
-    "outputs": [
-        {
-            "outputName": "output.gltf",
-            "outputFormat": "gltf"
-        }
-    ]
+    "outputFileName": "your_model",  # 出力ファイル名（拡張子なし）
+    "exportFormats": ["glb"]  # 出力フォーマット（glb または gltf）
 }
 ```
+
+### ワークフロータイプ
+
+- **higher-tier-optimize-and-convert**: 有料プラン向けの高品質変換
+- **free-tier-optimize-and-convert**: 無料プラン向けの変換
 
 ### 対応フォーマット
 
 - **入力**: OBJ（Wavefront OBJ形式）
-- **出力**: GLTF（GL Transmission Format）
+- **出力**: GLB（glTF Binary）または GLTF（GL Transmission Format）
 
 ### ファイルアップロードの仕組み
 
 1. Unity APIから署名付きURL（Azure Blob Storage）を取得
 2. 取得したURLに対してPUT リクエストでファイルをアップロード
 3. 必要に応じてアップロード完了を通知
+
+### 変換済みファイルの取得方法
+
+変換完了後のファイル取得は以下の手順で行います：
+
+1. **Asset詳細APIを呼び出す**
+   - エンドポイント: `GET /assets/v1/projects/{projectId}/assets/{assetId}/versions/{versionId}`
+   - パラメータ: `IncludeFields=["*", "datasets", "datasets.*", "files", "files.*"]`
+   - レスポンスの`files`配列に全ファイル情報が含まれる
+
+2. **対象ファイルを特定**
+   - `files`配列から`filePath`が一致するファイルを検索
+   - `datasetIds`配列で所属データセットを確認
+
+3. **ダウンロードURLを取得**
+   - エンドポイント: `GET .../files/{filePath}/download-url`
+   - `{filePath}`はURLエンコードが必要
+
+**注意**: データセットのファイル一覧API（`GET .../datasets/{datasetId}/files`）は、変換直後は空の配列を返す場合があります。Asset詳細APIの`files`フィールドを使用することで確実にファイル情報を取得できます。
 
 ## セキュリティ上の注意
 
