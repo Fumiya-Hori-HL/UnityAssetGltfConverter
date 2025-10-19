@@ -269,40 +269,52 @@ graph LR
 
 ## OpenAPI仕様書準拠のポイント
 
-### リクエストフィールド名
+### リクエスト構造
 
 ```mermaid
 graph TD
-    A[OpenAPI仕様書] -->|ファイルアップロード| B["filePath (camelCase)"]
-    A -->|変換リクエスト| C["extraParameters (camelCase)"]
-    A -->|変換URL| D["workflowType in URL path"]
+    A[OpenAPI仕様書] -->|ファイルアップロード| B["POST /files<br/>Body: {filePath}"]
+    A -->|変換開始| C["POST /transformations/start/{workflowType}<br/>Body: {extraParameters}"]
+    A -->|ダウンロードURL取得| D["GET /files/{filePath}/download-url"]
 
-    B -.->|以前は| B2["FilePath (PascalCase) ❌"]
-    C -.->|以前は| C2["parameters ❌"]
-    D -.->|以前は| D2["workflowType in body ❌"]
+    B --> B1["filePath: ファイル名（必須）"]
+    C --> C1["extraParameters: 変換パラメータ（オプション）"]
+    C --> C2["workflowType: URLパスパラメータ"]
+    D --> D1["filePath: URLエンコードが必要"]
 
-    style B fill:#e1ffe1
-    style C fill:#e1ffe1
-    style D fill:#e1ffe1
-    style B2 fill:#ffe1e1
-    style C2 fill:#ffe1e1
-    style D2 fill:#ffe1e1
+    style A fill:#e1f5ff
+    style B fill:#fff4e1
+    style C fill:#fff4e1
+    style D fill:#fff4e1
+    style B1 fill:#e1ffe1
+    style C1 fill:#e1ffe1
+    style C2 fill:#e1ffe1
+    style D1 fill:#e1ffe1
 ```
 
-### レスポンスフィールド名
+### レスポンス構造
 
 ```mermaid
 graph TD
-    A[OpenAPI仕様書] -->|ファイルアップロード| B["uploadUrl"]
-    A -->|変換開始| C["transformationId"]
-    A -->|ダウンロードURL| D["url"]
+    A[OpenAPI仕様書] -->|ファイルアップロード| B["CreateNewAssetFileResponse"]
+    A -->|変換開始| C["StartAssetTransformationResponse"]
+    A -->|ダウンロードURL取得| D["GetAssetFileUrlResponse"]
+    A -->|Asset詳細| E["ReadAssetResponse"]
 
-    B -.->|以前は| B2["uploadUrl or url ❌"]
-    C -.->|以前は| C2["id ❌"]
+    B --> B1["uploadUrl: 署名付きアップロードURL"]
+    C --> C1["transformationId: 変換ID"]
+    D --> D1["url: 署名付きダウンロードURL"]
+    E --> E1["files: ファイル情報の配列"]
+    E1 --> E2["filePath: ファイルパス<br/>datasetIds: 所属データセット<br/>status: ファイルステータス<br/>fileSize: ファイルサイズ"]
 
-    style B fill:#e1ffe1
-    style C fill:#e1ffe1
-    style D fill:#e1ffe1
-    style B2 fill:#ffe1e1
-    style C2 fill:#ffe1e1
+    style A fill:#e1f5ff
+    style B fill:#fff4e1
+    style C fill:#fff4e1
+    style D fill:#fff4e1
+    style E fill:#fff4e1
+    style B1 fill:#e1ffe1
+    style C1 fill:#e1ffe1
+    style D1 fill:#e1ffe1
+    style E1 fill:#e1ffe1
+    style E2 fill:#e1ffe1
 ```
