@@ -127,7 +127,7 @@ def get_access_token(key_id, secret_key, project_id):
         raise
 
 
-def create_asset_via_api(auth_credentials, project_id, asset_name, asset_type="MODEL_3D", description=""):
+def create_asset_via_api(auth_credentials, project_id, asset_name, primary_type="3D Model", description=""):
     """
     Web APIでアセットを作成する
 
@@ -139,8 +139,9 @@ def create_asset_via_api(auth_credentials, project_id, asset_name, asset_type="M
         プロジェクトID
     asset_name : str
         アセット名
-    asset_type : str
-        アセットタイプ（デフォルト: MODEL_3D）
+    primary_type : str
+        プライマリタイプ（デフォルト: 3D Model）
+        例: "Other", "3D Model", "Audio", "Video", "2D Asset", "Script", "Material"
     description : str
         アセットの説明（オプション）
 
@@ -160,7 +161,7 @@ def create_asset_via_api(auth_credentials, project_id, asset_name, asset_type="M
 
     body = {
         "name": asset_name,
-        "type": asset_type
+        "primaryType": primary_type
     }
 
     if description:
